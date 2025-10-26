@@ -6,14 +6,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
-from .audio_processor import audio_processor
-from .classifier import text_classifier
+from audio_processor import audio_processor
+from classifier import text_classifier
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
 # Конфигурация
 MODEL_PATH = os.getenv("MODEL_PATH", "./models")
+MIN_WORDS_REQUIRED = os.getenv("MIN_WORDS")
 
 app = FastAPI(
     title="Speech Style Classifier API",
@@ -23,7 +24,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # В продакшне укажите конкретные домены
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -89,7 +90,6 @@ async def classify_audio(file: UploadFile = File(...)):
     Returns:
         ClassificationResponse: Результат классификации
     """
-    # Проверка типа файла
     if not file.content_type or not file.content_type.startswith('audio/'):
         raise HTTPException(
             status_code=400,
@@ -97,7 +97,6 @@ async def classify_audio(file: UploadFile = File(...)):
         )
 
     try:
-        # Сохраняем временный файл
         with tempfile.NamedTemporaryFile(
                 delete=False,
                 suffix=os.path.splitext(file.filename)[1] or ".ogg"
@@ -108,10 +107,8 @@ async def classify_audio(file: UploadFile = File(...)):
 
         logger.info(f"Обработка файла: {file.filename}, размер: {len(content)} байт")
 
-        # Конвертируем аудио в текст
         success, text = audio_processor.convert_audio_to_text(temp_path)
 
-        # Очищаем временный файл
         os.unlink(temp_path)
 
         if not success:
@@ -126,11 +123,28 @@ async def classify_audio(file: UploadFile = File(...)):
                 error=text
             )
 
-        # Классифицируем текст
+        words = text.strip().split()
+        word_count = len(words)
+
+        if word_count < MIN_WORDS_REQUIRED:
+            error_message = f"Слишком мало слов распознано: {word_count}. Минимум требуется: {MIN_WORDS_REQUIRED} слов"
+            logger.warning(error_message)
+            return ClassificationResponse(
+                success=False,
+                label=-1,
+                label_name="Ошибка",
+                confidence=0.0,
+                text=text,
+                text_length=len(text),
+                word_count=word_count,
+                error=error_message
+            )
+
         classification_result = text_classifier.predict(text)
 
         logger.info(f"Успешная классификация: {classification_result['label_name']} "
-                    f"(уверенность: {classification_result['confidence']:.2f})")
+                    f"(уверенность: {classification_result['confidence']:.2f}), "
+                    f"слов: {word_count}")
 
         return ClassificationResponse(
             success=True,
@@ -138,13 +152,13 @@ async def classify_audio(file: UploadFile = File(...)):
             label_name=classification_result["label_name"],
             confidence=classification_result["confidence"],
             text=text,
-            text_length=classification_result["text_length"]
+            text_length=classification_result["text_length"],
+            word_count=word_count
         )
 
     except Exception as e:
         logger.error(f"Ошибка обработки запроса: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
 
 @app.get("/supported_formats")
 async def get_supported_formats():

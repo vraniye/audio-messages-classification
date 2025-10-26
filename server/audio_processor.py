@@ -5,6 +5,14 @@ import speech_recognition as sr
 from pydub import AudioSegment
 from typing import Optional, Tuple
 
+ffmpeg_path = "C:\\fmpeg\\fmpeg.exe"
+ffprobe_path = "C:\\fmpeg\\fprobe.exe"
+
+if os.path.exists(ffmpeg_path):
+    AudioSegment.converter = ffmpeg_path
+if os.path.exists(ffprobe_path):
+    AudioSegment.ffprobe = ffprobe_path
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("audio-processor")
 
@@ -39,28 +47,23 @@ class AudioToTextConverter:
             Tuple[bool, str]: (успех, текст или сообщение об ошибке)
         """
         try:
-            # Определяем язык
             lang_code = self.supported_languages.get(language, self.default_language)
 
-            # Конвертируем аудио в WAV если нужно
             wav_path = self._convert_to_wav(audio_path)
             if not wav_path:
                 return False, "Ошибка конвертации аудио в WAV"
 
             # Распознаем речь
             with sr.AudioFile(wav_path) as source:
-                # Убираем шум и адаптируем к уровню звука
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 audio_data = self.recognizer.record(source)
 
-                # Распознаем текст
                 text = self.recognizer.recognize_google(
                     audio_data,
                     language=lang_code,
                     show_all=False
                 )
 
-            # Очищаем временные файлы
             if wav_path != audio_path:
                 os.unlink(wav_path)
 
@@ -90,25 +93,19 @@ class AudioToTextConverter:
             Optional[str]: Путь к WAV файлу или None при ошибке
         """
         try:
-            # Если файл уже в WAV формате
             if audio_path.lower().endswith('.wav'):
                 return audio_path
 
-            # Определяем формат по расширению
             ext = os.path.splitext(audio_path)[1].lower().lstrip('.')
 
-            # Загружаем аудио
             if ext in ['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wma']:
                 audio = AudioSegment.from_file(audio_path, format=ext)
             else:
-                # Пытаемся автоматически определить формат
                 audio = AudioSegment.from_file(audio_path)
 
-            # Создаем временный WAV файл
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
                 wav_path = tmp.name
 
-            # Экспортируем в WAV
             audio.export(wav_path, format="wav")
             return wav_path
 
@@ -117,13 +114,10 @@ class AudioToTextConverter:
             return None
 
     def get_supported_formats(self) -> list:
-        """Возвращает список поддерживаемых форматов аудио."""
         return ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'wma']
 
     def get_supported_languages(self) -> dict:
-        """Возвращает словарь поддерживаемых языков."""
         return self.supported_languages
 
 
-# Синглтон экземпляр для использования в приложении
 audio_processor = AudioToTextConverter()
