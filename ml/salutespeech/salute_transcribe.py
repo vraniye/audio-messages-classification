@@ -388,6 +388,18 @@ def _convert_to_wav(meta: AudioMetadata) -> Path:
     return temp_file_path
 
 
+def _validate_target_format(meta: AudioMetadata) -> None:
+    # Убеждаемся, что файл уже соответствует формату WAV PCM16 mono 16 kHz.
+    if meta.codec != "pcm_s16le":
+        raise ValidationError(
+            "convert=False допустимо только для WAV PCM16 (pcm_s16le)."
+        )
+    if meta.sample_rate != 16000:
+        raise ValidationError("convert=False требует частоту дискретизации 16 кГц.")
+    if meta.channels != 1:
+        raise ValidationError("convert=False требует моно-канал (1).")
+
+
 _default_client: Optional[SaluteSpeechClient] = None
 
 
@@ -399,13 +411,14 @@ def _get_client() -> SaluteSpeechClient:
     return _default_client
 
 
-def transcribe_file(path: str, *, lang: str = "ru-RU") -> str:
+def transcribe_file(path: str, *, lang: str = "ru-RU", convert: bool = True) -> str:
     """
     Convert an audio file to text using Salute Speech API.
 
     Args:
         path: Path to the audio file (.ogg with Opus is supported).
         lang: Recognition language code, defaults to "ru-RU".
+        convert: When True (default) run ffmpeg conversion to target format.
 
     Returns:
         Recognized transcription as plain text.
@@ -416,8 +429,15 @@ def transcribe_file(path: str, *, lang: str = "ru-RU") -> str:
 
     wav_path: Optional[Path] = None
     try:
-        wav_path = _convert_to_wav(meta)
-        with wav_path.open("rb") as fh:
+        if convert:
+            wav_path = _convert_to_wav(meta)
+            audio_path_for_upload = wav_path
+        else:
+            _validate_target_format(meta)
+            audio_path_for_upload = meta.path
+            logger.debug("Используем уже подготовленный WAV без повторной конвертации: %s", audio_path_for_upload)
+
+        with audio_path_for_upload.open("rb") as fh:
             audio_bytes = fh.read()
 
         client = _get_client()
@@ -425,7 +445,7 @@ def transcribe_file(path: str, *, lang: str = "ru-RU") -> str:
         logger.info("Transcription complete for %s", audio_path)
         return text
     finally:
-        if wav_path and wav_path != audio_path and wav_path.exists():
+        if convert and wav_path and wav_path.exists():
             try:
                 wav_path.unlink()
             except OSError:
@@ -459,4 +479,5 @@ if __name__ == "__main__":
 # Example integration:
 # from salute_transcribe import transcribe_file
 # text = transcribe_file("/path/to/audio.ogg", lang="ru-RU")
+# text = transcribe_file("/path/to/already_converted.wav", lang="ru-RU", convert=False)
 # print(text)
