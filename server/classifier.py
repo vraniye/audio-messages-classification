@@ -25,16 +25,23 @@ class TextClassifier:
         self.model_config = {
             "classic": {
                 "model_path": "models/classic/classifier.pkl",
-                "vectorizer_path": "models/classic/vectorizer.pkl"
+                "vectorizer_path": "models/classic/vectorizer.pkl",
+                "type": "sklearn",
             },
             "neural": {
                 "model_path": "models/neural/model.pkl",
-                "vectorizer_path": "models/neural/vectorizer.pkl"
+                "vectorizer_path": "models/neural/vectorizer.pkl",
+                "type": "sklearn",
             },
             "transformer": {
                 "model_path": "models/transformer/model.pkl",
-                "vectorizer_path": "models/transformer/vectorizer.pkl"
-            }
+                "vectorizer_path": "models/transformer/vectorizer.pkl",
+                "type": "sklearn",
+            },
+            "ensemble": {
+                "model_path": "ml/ensemble/classifier.pkl",
+                "type": "ensemble",
+            },
         }
 
     def load_model(self, model_type: str = "classic") -> bool:
@@ -44,11 +51,11 @@ class TextClassifier:
 
         try:
             config = self.model_config.get(model_type, self.model_config["classic"])
+            model_kind = config.get("type", "sklearn")
 
             model_file = config["model_path"]
-            vectorizer_file = config["vectorizer_path"]
+            vectorizer_file = config.get("vectorizer_path")
 
-            # Загрузка модели
             if os.path.exists(model_file):
                 self.models[model_type] = joblib.load(model_file)
                 logger.info(f"Модель {model_type} загружена из {model_file}")
@@ -56,11 +63,14 @@ class TextClassifier:
                 logger.error(f"Файл модели не найден: {model_file}")
                 return False
 
-            if os.path.exists(vectorizer_file):
-                self.vectorizers[model_type] = joblib.load(vectorizer_file)
-                logger.info(f"Векторизатор {model_type} загружен из {vectorizer_file}")
+            if model_kind == "sklearn":
+                if vectorizer_file and os.path.exists(vectorizer_file):
+                    self.vectorizers[model_type] = joblib.load(vectorizer_file)
+                    logger.info(f"Векторизатор {model_type} загружен из {vectorizer_file}")
+                else:
+                    logger.warning(f"Векторизатор для {model_type} не найден, будет использован fallback")
+                    self.vectorizers[model_type] = None
             else:
-                logger.warning(f"Векторизатор для {model_type} не найден, будет использован fallback")
                 self.vectorizers[model_type] = None
 
             return True
@@ -77,6 +87,12 @@ class TextClassifier:
                 return self._fallback_prediction(text)
 
         try:
+            config = self.model_config.get(model, self.model_config["classic"])
+            model_kind = config.get("type", "sklearn")
+
+            if model_kind == "ensemble":
+                return self._predict_ensemble(text, model)
+
             processed_text = self._preprocess_text(text)
 
             vectorizer = self.vectorizers.get(model)
@@ -165,7 +181,7 @@ class TextClassifier:
 
     def preload_models(self, model_types: list = None):
         if model_types is None:
-            model_types = ["classic", "neural", "transformer"]
+            model_types = list(self.model_config.keys())
 
         for model_type in model_types:
             try:
@@ -173,6 +189,28 @@ class TextClassifier:
                 logger.info(f"Модель {model_type} предзагружена")
             except Exception as e:
                 logger.error(f"Ошибка предзагрузки модели {model_type}: {e}")
+
+    def _predict_ensemble(self, text: str, model: str) -> Dict[str, Any]:
+        current_model = self.models[model]
+        labels, proba = current_model.predict([text], return_proba=True)
+
+        raw_label = labels[0]
+        try:
+            label_idx = int(float(raw_label))
+        except ValueError:
+            label_idx = int(raw_label)
+
+        confidence = float(np.max(proba[0]))
+        label_name = self.label_names.get(label_idx, str(raw_label))
+
+        return {
+            "success": True,
+            "label": label_idx,
+            "label_name": label_name,
+            "confidence": confidence,
+            "text_length": len(text),
+            "model": model
+        }
 
 
 text_classifier = TextClassifier()
