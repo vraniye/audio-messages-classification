@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import string
@@ -15,6 +16,17 @@ import numpy as np
 import pandas as pd
 import torch
 from pymorphy2 import MorphAnalyzer
+
+if not hasattr(inspect, "getargspec"):
+    from collections import namedtuple
+
+    _ArgSpec = namedtuple("ArgSpec", ["args", "varargs", "keywords", "defaults"])
+
+    def _getargspec(func):  # type: ignore[override]
+        spec = inspect.getfullargspec(func)
+        return _ArgSpec(spec.args, spec.varargs, spec.varkw, spec.defaults)
+
+    inspect.getargspec = _getargspec  # type: ignore[assignment]
 from sklearn.base import BaseEstimator, TransformerMixin
 from torch import nn
 from torch.nn import functional as F
