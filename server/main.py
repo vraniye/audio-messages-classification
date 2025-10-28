@@ -1,7 +1,7 @@
 import os
 import tempfile
 import logging
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -81,11 +81,18 @@ async def health_check() -> HealthResponse:
 
 
 @app.post("/classify", response_model=ClassificationResponse)
-async def classify_audio(file: UploadFile = File(...)):
+async def classify_audio(
+    file: UploadFile = File(...),
+    model: str = Form("default")  # Добавляем параметр модели из формы
+):
     """
-    Классифицирует стиль речи из аудиофайла.
+    Классифицирует стиль речи из аудиофайла с использованием выбранной модели.
 
     Поддерживаемые форматы: WAV, MP3, M4A, AAC, FLAC, OGG
+
+    Args:
+        file: Аудиофайл для обработки
+        model: Идентификатор модели для классификации
 
     Returns:
         ClassificationResponse: Результат классификации
@@ -96,6 +103,13 @@ async def classify_audio(file: UploadFile = File(...)):
             detail="File must be an audio file. Received content type: {}".format(file.content_type)
         )
 
+    # Валидация модели
+    available_models = ["classic", "neural", "transformer"]
+    if model not in available_models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported model: {model}. Available models: {', '.join(available_models)}"
+        )
     try:
         with tempfile.NamedTemporaryFile(
                 delete=False,
@@ -105,7 +119,7 @@ async def classify_audio(file: UploadFile = File(...)):
             tmp.write(content)
             temp_path = tmp.name
 
-        logger.info(f"Обработка файла: {file.filename}, размер: {len(content)} байт")
+        logger.info(f"Обработка файла: {file.filename}, размер: {len(content)} байт, модель: {model}")
 
         success, text = audio_processor.convert_audio_to_text(temp_path)
 
@@ -120,7 +134,8 @@ async def classify_audio(file: UploadFile = File(...)):
                 confidence=0.0,
                 text="",
                 text_length=0,
-                error=text
+                error=text,
+                model=model  # Добавляем информацию о модели в ответ
             )
 
         words = text.strip().split()
@@ -137,14 +152,16 @@ async def classify_audio(file: UploadFile = File(...)):
                 text=text,
                 text_length=len(text),
                 word_count=word_count,
-                error=error_message
+                error=error_message,
+                model=model  # Добавляем информацию о модели в ответ
             )
 
-        classification_result = text_classifier.predict(text)
+        # Классификация текста с использованием выбранной модели
+        classification_result = text_classifier.predict(text, model=model)
 
         logger.info(f"Успешная классификация: {classification_result['label_name']} "
                     f"(уверенность: {classification_result['confidence']:.2f}), "
-                    f"слов: {word_count}")
+                    f"слов: {word_count}, модель: {model}")
 
         return ClassificationResponse(
             success=True,
@@ -153,7 +170,9 @@ async def classify_audio(file: UploadFile = File(...)):
             confidence=classification_result["confidence"],
             text=text,
             text_length=classification_result["text_length"],
-            word_count=word_count
+            word_count=word_count,
+            model=model,
+            duration=classification_result.get("duration"),
         )
 
     except Exception as e:
