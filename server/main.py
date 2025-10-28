@@ -13,8 +13,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
 # Конфигурация
-MODEL_PATH = os.getenv("MODEL_PATH", "./models")
-MIN_WORDS_REQUIRED = os.getenv("MIN_WORDS")
+current_dir = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(current_dir, "models"))
+MIN_WORDS_REQUIRED = int(os.getenv("MIN_WORDS", "5"))  # Значение по умолчанию 5
+MIN_DURATION = int(os.getenv("MIN_DURATION", "3"))  # Значение по умолчанию 3
 
 app = FastAPI(
     title="Speech Style Classifier API",
@@ -46,7 +48,6 @@ class HealthResponse(BaseModel):
     model_loaded: bool
 
 
-# Загрузка модели при старте
 @app.on_event("startup")
 async def startup_event():
     """Загружаем модель при запуске сервера."""
@@ -153,10 +154,9 @@ async def classify_audio(
                 text_length=len(text),
                 word_count=word_count,
                 error=error_message,
-                model=model  # Добавляем информацию о модели в ответ
+                model=model
             )
 
-        # Классификация текста с использованием выбранной модели
         classification_result = text_classifier.predict(text, model=model)
 
         logger.info(f"Успешная классификация: {classification_result['label_name']} "

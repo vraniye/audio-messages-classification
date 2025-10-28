@@ -1,102 +1,92 @@
 import os
 import requests
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-SERVER_URL = os.getenv("SERVER_URL", "http://127.0.0.1:8000")
-MIN_WORDS = int(os.getenv("MIN_WORDS", 5))
-MIN_DURATION = int(os.getenv("MIN_DURATION", 3))
+SERVER_URL = os.getenv("SERVER_URL", "http://127.0.0.1:8000/predict")
+MIN_WORDS = os.getenv("MIN_WORDS")
+MIN_DURATION = os.getenv("MIN_DURATION")
 
-# Состояние для выбора модели
-CHOOSING_MODEL = 1
-
-# Доступные модели
+# Словарь моделей
 MODELS = {
-    "classic": "Classic ML",
-    "neural": "Нейросеть",
-    "transformer": "Transformer"
+    "Classic ML": "classic",
+    "Нейросеть": "neural",
+    "Transformer": "transformer"
 }
 
 
+# --- команды ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало работы с выбором модели."""
-    keyboard = [
-        ["Classic ML", "Нейросеть", "Transformer"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard,
-        one_time_keyboard=True,
-        resize_keyboard=True,
-        input_field_placeholder="Выберите модель..."
-    )
-
-    await update.message.reply_text(
-        "🎧 Привет! Выбери модель для классификации:\n\n"
-        "• *Classic ML* - классическая ML модель\n"
-        "• *Нейросеть* - нейросетевая модель\n"
-        "• *Transformer* - трансформерная модель\n\n"
-        "После выбора модели отправь мне аудиосообщение — я попробую определить, "
-        "разговорный это стиль или официальный.",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-    return CHOOSING_MODEL
-
-
-async def choose_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора модели."""
-    user_choice = update.message.text
-
-    model_mapping = {
-        "Classic ML": "classic",
-        "Нейросеть": "neural",
-        "Transformer": "transformer"
-    }
-
-    chosen_model = model_mapping.get(user_choice)
-
-    if chosen_model:
-        context.user_data['chosen_model'] = chosen_model
-        await update.message.reply_text(
-            f"✅ Выбрана модель: *{MODELS[chosen_model]}*\n\n"
-            f"Теперь отправь мне аудиосообщение для анализа.",
-            reply_markup=ReplyKeyboardRemove(),
-            parse_mode='Markdown'
-        )
-        return ConversationHandler.END
-    else:
+    try:
+        # Простая клавиатура без сложных параметров
         keyboard = [["Classic ML", "Нейросеть", "Transformer"]]
         reply_markup = ReplyKeyboardMarkup(
             keyboard,
-            one_time_keyboard=True,
-            resize_keyboard=True
+            resize_keyboard=True,
+            one_time_keyboard=True
         )
+
+        # Более простое сообщение
+        welcome_text = (
+            "🎧 Привет! Выбери модель для классификации:\n\n"
+            "• Classic ML - классическая ML модель\n"
+            "• Нейросеть - нейросетевая модель\n"
+            "• Transformer - трансформерная модель\n\n"
+            "После выбора отправь аудиосообщение для анализа."
+        )
+
         await update.message.reply_text(
-            "❌ Пожалуйста, выбери модель из предложенных вариантов:",
+            welcome_text,
             reply_markup=reply_markup
         )
-        return CHOOSING_MODEL
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена выбора модели."""
-    await update.message.reply_text(
-        "Операция отменена. Используй /start чтобы начать заново.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ConversationHandler.END
-
-
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка аудиосообщений."""
-    # Проверяем, выбрана ли модель
-    if 'chosen_model' not in context.user_data:
+    except Exception as e:
+        print(f"Ошибка в start: {e}")
+        # Резервный вариант - отправить простое сообщение без клавиатуры
         await update.message.reply_text(
-            "❌ Сначала выбери модель для классификации с помощью /start"
+            "🎧 Привет! Отправь мне аудиосообщение для классификации стиля речи."
+        )
+
+
+async def handle_model_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора модели из кнопок."""
+    user_choice = update.message.text
+    model_id = MODELS.get(user_choice)
+
+    if model_id:
+        # Сохраняем выбранную модель в контексте пользователя
+        context.user_data['selected_model'] = model_id
+        await update.message.reply_text(
+            f"✅ Выбрана модель: *{user_choice}*\n\n"
+            f"Теперь отправь мне аудиосообщение или аудиофайл для классификации.",
+            parse_mode='Markdown',
+            reply_markup=None  # Убираем клавиатуру после выбора
+        )
+    else:
+        await update.message.reply_text(
+            "Пожалуйста, выберите модель из предложенных вариантов.",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Classic ML", "Нейросеть", "Transformer"]],
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
+
+
+# --- обработка аудио ---
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем, выбрана ли модель
+    if 'selected_model' not in context.user_data:
+        await update.message.reply_text(
+            "❌ Сначала выберите модель для классификации!",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Classic ML", "Нейросеть", "Transformer"]],
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
         )
         return
 
@@ -109,7 +99,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Быстрая проверка длительности для голосовых сообщений
-    if voice and voice.duration < MIN_DURATION:
+    if voice and voice.duration < int(MIN_DURATION):
         await update.message.reply_text(
             f"❌ Слишком короткое голосовое сообщение!\n"
             f"Минимальная длительность: *{MIN_DURATION} секунды*\n\n"
@@ -127,7 +117,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Отправляем на сервер с выбранной моделью
     files = {'file': ('audio.ogg', file_bytes, 'audio/ogg')}
-    data = {'model': context.user_data['chosen_model']}  # Передаем выбранную модель
+    data = {'model': context.user_data['selected_model']}
 
     try:
         response = requests.post(f"{SERVER_URL}/classify", files=files, data=data, timeout=60)
@@ -136,24 +126,27 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Ошибка сервера: {response.status_code}")
             return
 
-        data = response.json()
+        response_data = response.json()
 
         # Обрабатываем ответ от сервера
-        if data.get('success'):
-            label = data.get('label')
-            class_name = data.get('label_name', 'Неизвестно')
-            confidence = data.get('confidence', 0)
-            text = data.get('text', '')
-            duration = data.get('duration')
-            word_count = data.get('word_count')
-            model_used = data.get('model', context.user_data['chosen_model'])
+        if response_data.get('success'):
+            label = response_data.get('label')
+            class_name = response_data.get('label_name', 'Неизвестно')
+            confidence = response_data.get('confidence', 0)
+            text = response_data.get('text', '')
+            duration = response_data.get('duration')
+            word_count = response_data.get('word_count')
+            model_used = response_data.get('model', 'unknown')
+
+            # Получаем человеко-читаемое название модели
+            model_name = next((name for name, id in MODELS.items() if id == model_used), model_used)
 
             # Формируем детализированный ответ
             response_parts = [
-                f"🤖 *Модель:* {MODELS.get(model_used, model_used)}",
                 f"🏷 *Стиль речи:* {class_name}",
                 f"📊 *Код:* {label}",
-                f"🎯 *Уверенность:* {confidence:.2f}"
+                f"🎯 *Уверенность:* {confidence:.2f}",
+                f"🤖 *Модель:* {model_name}"
             ]
 
             # Добавляем дополнительную информацию если есть
@@ -171,11 +164,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         else:
             # Обработка ошибок от сервера
-            error_msg = data.get('error', 'Неизвестная ошибка')
+            error_msg = response_data.get('error', 'Неизвестная ошибка')
             if "слишком короткое" in error_msg.lower():
                 await update.message.reply_text(
                     f"❌ {error_msg}\n\n"
-                    f"Попробуйте отправить сообщение короче (*{MIN_DURATION}+ секунд*).",
+                    f"Попробуйте отправить сообщение подлиннее (*{MIN_DURATION}+ секунд*).",
                     parse_mode='Markdown'
                 )
             elif "слов" in error_msg.lower():
@@ -204,58 +197,41 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка доступности сервера"""
     try:
-        r = requests.get(SERVER_URL.replace("/predict", "/health"))
+        r = requests.get(SERVER_URL.replace("/predict", "/docs"))
         if r.status_code == 200:
-            health_data = r.json()
-            models_status = health_data.get('models_loaded', {})
-
-            status_text = "✅ Сервер в сети!\n\n🤖 Статус моделей:\n"
-            for model, loaded in models_status.items():
-                status_text += f"• {MODELS.get(model, model)}: {'✅' if loaded else '❌'}\n"
-
-            await update.message.reply_text(status_text)
+            await update.message.reply_text("✅ Сервер в сети!")
         else:
             await update.message.reply_text("⚠️ Сервер недоступен.")
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда помощи"""
-    help_text = (
-        "🤖 *Доступные команды:*\n"
-        "/start - выбрать модель и начать работу\n"
-        "/ping - проверить статус сервера и моделей\n"
-        "/help - показать эту справку\n\n"
-        "🎧 *Доступные модели:*\n"
-        "• Classic ML - классические алгоритмы\n"
-        "• Нейросеть - нейросетевые архитектуры\n"
-        "• Transformer - трансформерные модели\n\n"
-        "📋 *Требования к аудио:*\n"
-        f"• Минимальная длительность: {MIN_DURATION} секунд\n"
-        f"• Минимальное количество слов: {MIN_WORDS}"
+async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для смены модели"""
+    keyboard = [
+        ["Classic ML", "Нейросеть", "Transformer"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(
+        keyboard,
+        one_time_keyboard=True,
+        resize_keyboard=True,
+        input_field_placeholder="Выберите модель..."
     )
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+    await update.message.reply_text(
+        "Выберите модель для классификации:",
+        reply_markup=reply_markup
+    )
 
 
 # --- запуск ---
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # ConversationHandler для выбора модели
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            CHOOSING_MODEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, choose_model)
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    )
-
-    app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ping", ping))
-    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("model", change_model))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_model_selection))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
     print("🤖 Telegram-бот запущен и ждёт сообщений...")
