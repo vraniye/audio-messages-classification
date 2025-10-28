@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+"""
+Example integration:
+
+    from salute_transcribe import transcribe_file
+
+    # С вариантом конвертации (OGG/Opus → WAV PCM16 16 kHz mono)
+    text = transcribe_file("/path/to/audio.ogg", lang="ru-RU")
+
+    # Если аудио уже приведено к нужному формату, можно отключить конвертацию
+    text = transcribe_file("/path/to/already_converted.wav", lang="ru-RU", convert=False)
+    print(text)
+"""
+
 import base64
 import json
 import logging
@@ -475,9 +488,3 @@ def _main() -> None:
 if __name__ == "__main__":
     _main()
 
-
-# Example integration:
-# from salute_transcribe import transcribe_file
-# text = transcribe_file("/path/to/audio.ogg", lang="ru-RU")
-# text = transcribe_file("/path/to/already_converted.wav", lang="ru-RU", convert=False)
-# print(text)
