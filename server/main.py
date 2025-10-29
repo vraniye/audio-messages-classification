@@ -41,6 +41,8 @@ class ClassificationResponse(BaseModel):
     text: str
     text_length: int
     error: Optional[str] = None
+    model: str
+    word_count: int
 
 
 class HealthResponse(BaseModel):
@@ -105,7 +107,7 @@ async def classify_audio(
         )
 
     # Валидация модели
-    available_models = ["classic", "neural", "transformer"]
+    available_models = ["logistic", "cnn", "bert"]
     if model not in available_models:
         raise HTTPException(
             status_code=400,

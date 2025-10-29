@@ -12,9 +12,9 @@ MIN_DURATION = os.getenv("MIN_DURATION")
 
 # Словарь моделей
 MODELS = {
-    "Classic ML": "classic",
-    "Нейросеть": "neural",
-    "Transformer": "transformer"
+    "Classic ML": "logistic",
+    "Нейросеть": "cnn",
+    "Transformer": "bert"
 }
 
 
@@ -136,8 +136,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = response_data.get('text', '')
             duration = response_data.get('duration')
             word_count = response_data.get('word_count')
-            model_used = response_data.get('model', 'unknown')
-
+            model_used = response_data.get('model')
             # Получаем человеко-читаемое название модели
             model_name = next((name for name, id in MODELS.items() if id == model_used), model_used)
 
