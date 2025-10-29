@@ -1,13 +1,17 @@
 import os
 import tempfile
 import logging
+from typing import List, Optional
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 
-from audio_processor import audio_processor
-from classifier import text_classifier
+from .audio_processor import audio_processor
+from .classifier import text_classifier
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
@@ -33,6 +37,15 @@ app.add_middleware(
 
 
 # Модели ответов
+class ModelDetail(BaseModel):
+    model: str
+    label: int
+    label_name: str
+    confidence: float
+    success: bool
+    fallback: Optional[bool] = None
+
+
 class ClassificationResponse(BaseModel):
     success: bool
     label: int
@@ -40,9 +53,14 @@ class ClassificationResponse(BaseModel):
     confidence: float
     text: str
     text_length: int
-    error: Optional[str] = None
     model: str
-    word_count: int
+    word_count: Optional[int] = None
+    best_model: Optional[str] = None
+    summary: Optional[List[str]] = None
+    details: Optional[List[ModelDetail]] = None
+    error: Optional[str] = None
+    duration: Optional[float] = None
+    fallback: Optional[bool] = None
 
 
 class HealthResponse(BaseModel):
@@ -53,11 +71,15 @@ class HealthResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Загружаем модель при запуске сервера."""
-    if os.path.exists(MODEL_PATH):
-        text_classifier.load_model(MODEL_PATH)
-        logger.info("Модель успешно загружена")
+    available_for_preload = [name for name in text_classifier.get_available_models() if name != "all"]
+    if available_for_preload:
+        text_classifier.preload_models(available_for_preload)
+        logger.info("Предзагружены модели: %s", ", ".join(available_for_preload))
     else:
-        logger.warning(f"Директория с моделью не найдена: {MODEL_PATH}")
+        logger.warning(
+            "Не найдено доступных моделей для предзагрузки. Проверьте артефакты в %s",
+            MODEL_PATH,
+        )
 
 
 @app.get("/")
@@ -79,7 +101,7 @@ async def health_check() -> HealthResponse:
     """Проверка здоровья сервера."""
     return HealthResponse(
         status="ok",
-        model_loaded=text_classifier.model is not None
+        model_loaded=bool(text_classifier.models)
     )
 
 
@@ -106,12 +128,19 @@ async def classify_audio(
             detail="File must be an audio file. Received content type: {}".format(file.content_type)
         )
 
+    # Нормализуем идентификатор модели
+    model = (model or "logistic").lower()
+    if model == "default":
+        model = "logistic"
+
     # Валидация модели
-    available_models = ["logistic", "cnn", "bert"]
-    if model not in available_models:
+    valid_models = set(text_classifier.model_config.keys()) | {"all"}
+    if model not in valid_models:
+        available = text_classifier.get_available_models()
+        available_display = ", ".join(available or sorted(valid_models))
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported model: {model}. Available models: {', '.join(available_models)}"
+            detail=f"Unsupported model: {model}. Available models: {available_display}"
         )
     try:
         with tempfile.NamedTemporaryFile(
@@ -161,20 +190,44 @@ async def classify_audio(
 
         classification_result = text_classifier.predict(text, model=model)
 
-        logger.info(f"Успешная классификация: {classification_result['label_name']} "
-                    f"(уверенность: {classification_result['confidence']:.2f}), "
-                    f"слов: {word_count}, модель: {model}")
+        detail_items = classification_result.get("details") or []
+        details: Optional[List[ModelDetail]] = None
+        if detail_items:
+            details = [
+                ModelDetail(
+                    model=item.get("model", ""),
+                    label=int(item.get("label", 0)),
+                    label_name=item.get("label_name", "Неизвестный"),
+                    confidence=float(item.get("confidence", 0.0)),
+                    success=bool(item.get("success", False)),
+                    fallback=item.get("fallback"),
+                )
+                for item in detail_items
+            ]
+
+        model_used = classification_result.get("model", model)
+        logger.info(
+            "Успешная классификация: %s (уверенность: %.2f), слов: %s, модель: %s",
+            classification_result.get("label_name"),
+            classification_result.get("confidence", 0.0),
+            word_count,
+            model_used,
+        )
 
         return ClassificationResponse(
-            success=True,
-            label=classification_result["label"],
-            label_name=classification_result["label_name"],
-            confidence=classification_result["confidence"],
+            success=classification_result.get("success", True),
+            label=int(classification_result.get("label", 0)),
+            label_name=classification_result.get("label_name", "Неизвестный"),
+            confidence=float(classification_result.get("confidence", 0.0)),
             text=text,
-            text_length=classification_result["text_length"],
+            text_length=int(classification_result.get("text_length", len(text))),
             word_count=word_count,
-            model=model,
+            model=model_used,
+            best_model=classification_result.get("best_model"),
+            summary=classification_result.get("summary"),
+            details=details,
             duration=classification_result.get("duration"),
+            fallback=classification_result.get("fallback"),
         )
 
     except Exception as e:

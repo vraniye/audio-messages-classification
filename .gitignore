@@ -176,3 +176,16 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 telegram/ml_bot/env
+
+# Model artifacts: keep folder structure, ignore heavy binary weights
+server/models/**/*
+!server/models/**/
+!server/models/**/README.md
+!server/models/**/.gitkeep
+
+server/models/**/*.pth
+server/models/**/*.pt
+server/models/**/*.bin
+server/models/**/*.joblib
+server/models/**/*.pkl
+server/models/**/*.safetensors

@@ -6,9 +6,14 @@ import pickle
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pathlib import Path
+from typing import Any, Dict, List
+
 from scipy.sparse import csr_matrix
 from transformers import AutoTokenizer, AutoModel
-from typing import Dict, Any
+
+from server.models.fasttext.fasttext_classifier import FastTextClassifier
+from server.models.ensemble.ensemble_classifier import EnsembleClassifier
 
 class CNNClassifier(nn.Module):
     def __init__(self, vocab_size, embed_dim=128, num_classes=2, num_filters=50, filter_sizes=[3, 4, 5]):
@@ -50,7 +55,8 @@ class TextClassifier:
         self.vectorizers = {}
         self.tokenizers = {}
         self.vocabs = {}
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.models_dir = Path(__file__).resolve().parent / "models"
         self.label_names = {
             0: "Разговорная речь",
             1: "Официально-деловая речь"
@@ -59,27 +65,33 @@ class TextClassifier:
         # Конфигурация моделей — пути относительно корня проекта
         self.model_config = {
             "logistic": {
-                "model_path": "models/lr_model.pkl",
-                "vectorizer_path": "models/tfidf_vectorizer.pkl",
+                "model_path": str(self.models_dir / "lr" / "lr_model.pkl"),
+                "vectorizer_path": str(self.models_dir / "lr" / "tfidf_vectorizer.pkl"),
                 "type": "sklearn",
             },
             "cnn": {
-                "model_path": "models/cnn_best.pth",
-                "vocab_path": "models/vocab.pkl",
+                "model_path": str(self.models_dir / "cnn" / "cnn_best.pth"),
+                "vocab_path": str(self.models_dir / "cnn" / "vocab.pkl"),
                 "type": "torch_cnn",
                 "embed_dim": 128,
                 "num_filters": 50,
                 "filter_sizes": [3, 4, 5],
             },
             "bert": {
-                "model_path": "models/bert_classifier_best.pth",
+                "model_path": str(self.models_dir / "bert" / "bert_classifier_best.pth"),
                 "type": "torch_bert",
                 "num_classes": 2,
             },
-            # "ensemble": {
-            #     "model_path": "models/ensemble_model.pkl",
-            #     "type": "ensemble",
-            # },
+            "fasttext": {
+                "model_path": str(self.models_dir / "fasttext" / "fasttext_ensemble.bin"),
+                "label_index_path": str(self.models_dir / "fasttext" / "label_index.json"),
+                "type": "fasttext",
+            },
+            "ensemble": {
+                "artifacts_dir": str(self.models_dir / "ensemble"),
+                "linear_weight": 0.5,
+                "type": "ensemble",
+            },
         }
 
     def load_model(self, model_type: str = "logistic") -> bool:
@@ -101,6 +113,8 @@ class TextClassifier:
                 return self._load_torch_cnn(model_type, config)
             elif model_kind == "torch_bert":
                 return self._load_torch_bert(model_type, config)
+            elif model_kind == "fasttext":
+                return self._load_fasttext_model(model_type, config)
             elif model_kind == "ensemble":
                 return self._load_ensemble_model(model_type, config)
             else:
@@ -178,20 +192,52 @@ class TextClassifier:
         logger.info(f"BERT-модель {model_type} загружена на {self.device}")
         return True
 
-    def _load_ensemble_model(self, model_type, config):
-        model_file = config["model_path"]
-        if not os.path.exists(model_file):
-            logger.error(f"Ансамбль не найден: {model_file}")
+    def _load_fasttext_model(self, model_type, config):
+        model_path = Path(config["model_path"])
+        label_index_path = Path(config["label_index_path"])
+        if not model_path.exists():
+            logger.error(f"Файл fastText модели не найден: {model_path}")
             return False
-        self.models[model_type] = joblib.load(model_file)
-        logger.info(f"Ансамбль {model_type} загружен")
+        if not label_index_path.exists():
+            logger.error(f"Файл индексов fastText не найден: {label_index_path}")
+            return False
+
+        classifier = FastTextClassifier(
+            model_path=model_path,
+            label_index_path=label_index_path,
+        )
+        self.models[model_type] = classifier
+        logger.info(f"fastText-модель {model_type} загружена (device-independent)")
+        return True
+
+    def _load_ensemble_model(self, model_type, config):
+        artifacts_dir = Path(config["artifacts_dir"])
+        if not artifacts_dir.exists():
+            logger.error(f"Каталог артефактов ансамбля не найден: {artifacts_dir}")
+            return False
+
+        linear_weight = config.get("linear_weight", 0.5)
+        model = EnsembleClassifier(
+            artifacts_root=artifacts_dir,
+            linear_weight=float(linear_weight),
+            device=self.device,
+        )
+        self.models[model_type] = model
+        logger.info(f"Ансамбль {model_type} загружен на {self.device}")
         return True
 
     def predict(self, text: str, model: str = "logistic") -> Dict[str, Any]:
+        if model == "all":
+            return self._predict_all(text)
+
+        if model not in self.model_config:
+            logger.error(f"Неизвестный тип модели: {model}")
+            return self._fallback_prediction(text, model=model)
+
         if model not in self.models:
             success = self.load_model(model)
             if not success:
-                return self._fallback_prediction(text)
+                return self._fallback_prediction(text, model=model)
 
         try:
             config = self.model_config.get(model)
@@ -203,6 +249,8 @@ class TextClassifier:
                 return self._predict_torch_cnn(text, model)
             elif model_kind == "torch_bert":
                 return self._predict_torch_bert(text, model)
+            elif model_kind == "fasttext":
+                return self._predict_fasttext(text, model)
             elif model_kind == "sklearn":
                 return self._predict_sklearn(text, model)
             else:
@@ -231,6 +279,92 @@ class TextClassifier:
             "confidence": float(probability),
             "text_length": len(text),
             "model": model
+        }
+
+    def _predict_all(self, text: str) -> Dict[str, Any]:
+        results: List[Dict[str, Any]] = []
+        for model_name in self.model_config.keys():
+            result = self.predict(text, model=model_name)
+            results.append(dict(result))
+
+        if not results:
+            return self._fallback_prediction(text, model="all")
+
+        summary = [
+            f"{res.get('model')}: {res.get('label_name', 'Неизвестный')} ({res.get('confidence', 0.0):.2f})"
+            for res in results
+        ]
+
+        votes: Dict[int, Dict[str, Any]] = {}
+        for res in results:
+            if not res.get("success"):
+                continue
+            label_value = res.get("label")
+            if label_value is None:
+                continue
+            try:
+                label_idx = int(label_value)
+            except (TypeError, ValueError):
+                continue
+
+            entry = votes.setdefault(
+                label_idx,
+                {
+                    "count": 0,
+                    "confidence_sum": 0.0,
+                    "best_confidence": -1.0,
+                    "best_model": None,
+                },
+            )
+            entry["count"] += 1
+            confidence = float(res.get("confidence", 0.0))
+            entry["confidence_sum"] += confidence
+            if confidence > entry["best_confidence"]:
+                entry["best_confidence"] = confidence
+                entry["best_model"] = res.get("model")
+
+        if not votes:
+            return self._fallback_prediction(text, model="all")
+
+        def _vote_score(item):
+            label_idx, data = item
+            avg_conf = data["confidence_sum"] / max(1, data["count"])
+            return (data["count"], avg_conf, data["best_confidence"])
+
+        winning_label, winning_data = max(votes.items(), key=_vote_score)
+        best_model_name = winning_data["best_model"]
+        best_model_result = next(
+            (res for res in results if res.get("model") == best_model_name and int(res.get("label", -1)) == winning_label),
+            None,
+        )
+        if best_model_result is None:
+            best_model_result = max(
+                (res for res in results if int(res.get("label", -1)) == winning_label),
+                key=lambda item: item.get("confidence", 0.0),
+                default=None,
+            )
+
+        winning_confidence = winning_data["best_confidence"] if winning_data["best_confidence"] >= 0 else (
+            best_model_result.get("confidence", 0.0) if best_model_result else 0.0
+        )
+        label_name = self.label_names.get(winning_label, "Неизвестный")
+
+        success = any(res.get("success") for res in results)
+        fallback_flags = [bool(res.get("fallback")) for res in results if "fallback" in res]
+        fallback = bool(fallback_flags) and all(fallback_flags)
+
+        return {
+            "success": success,
+            "label": winning_label,
+            "label_name": label_name,
+            "confidence": winning_confidence,
+            "text_length": len(text),
+            "model": "all",
+            "best_model": best_model_name,
+            "details": results,
+            "summary": summary,
+            "votes": {label: data["count"] for label, data in votes.items()},
+            "fallback": fallback,
         }
 
     def _predict_torch_cnn(self, text: str, model: str) -> Dict[str, Any]:
@@ -285,6 +419,24 @@ class TextClassifier:
             "model": model
         }
 
+    def _predict_fasttext(self, text: str, model: str) -> Dict[str, Any]:
+        classifier: FastTextClassifier = self.models[model]
+        labels, probabilities = classifier.predict([text], return_proba=True)
+        proba_vector = probabilities[0]
+        best_idx = int(np.argmax(proba_vector))
+        raw_label = classifier.label_sequence[best_idx]
+        label = self._normalize_label(raw_label)
+        confidence = float(proba_vector[best_idx])
+
+        return {
+            "success": True,
+            "label": label,
+            "label_name": self.label_names.get(label, str(raw_label)),
+            "confidence": confidence,
+            "text_length": len(text),
+            "model": model,
+        }
+
     def _preprocess_text(self, text: str) -> str:
         return ' '.join(text.strip().lower().split())
 
@@ -331,11 +483,30 @@ class TextClassifier:
             "model": model
         }
 
-    def get_available_models(self) -> list:
-        available = []
+    def get_available_models(self) -> List[str]:
+        available: List[str] = []
         for model_type, config in self.model_config.items():
-            if os.path.exists(config["model_path"]):
-                available.append(model_type)
+            model_kind = config.get("type")
+            if model_kind == "sklearn":
+                if os.path.exists(config["model_path"]):
+                    available.append(model_type)
+            elif model_kind == "torch_cnn":
+                if os.path.exists(config["model_path"]) and os.path.exists(config["vocab_path"]):
+                    available.append(model_type)
+            elif model_kind == "torch_bert":
+                if os.path.exists(config["model_path"]):
+                    available.append(model_type)
+            elif model_kind == "fasttext":
+                model_path = Path(config["model_path"])
+                label_index_path = Path(config["label_index_path"])
+                if model_path.exists() and label_index_path.exists():
+                    available.append(model_type)
+            elif model_kind == "ensemble":
+                artifacts_dir = Path(config["artifacts_dir"])
+                if artifacts_dir.exists():
+                    available.append(model_type)
+        if available:
+            available.append("all")
         return available
 
     def preload_models(self, model_types: list = None):
@@ -348,10 +519,7 @@ class TextClassifier:
         current_model = self.models[model]
         labels, proba = current_model.predict([text], return_proba=True)
         raw_label = labels[0]
-        try:
-            label_idx = int(float(raw_label))
-        except ValueError:
-            label_idx = int(raw_label)
+        label_idx = self._normalize_label(raw_label)
         confidence = float(np.max(proba[0]))
         label_name = self.label_names.get(label_idx, str(raw_label))
         return {
@@ -362,6 +530,14 @@ class TextClassifier:
             "text_length": len(text),
             "model": model
         }
+
+    @staticmethod
+    def _normalize_label(value: Any) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            logger.warning("Не удалось преобразовать метку %s к int, используем 0", value)
+            return 0
 
 
 

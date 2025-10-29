@@ -14,8 +14,16 @@ MIN_DURATION = os.getenv("MIN_DURATION")
 MODELS = {
     "Classic ML": "logistic",
     "Нейросеть": "cnn",
-    "Transformer": "bert"
+    "Transformer": "bert",
+    "FastText": "fasttext",
+    "Ансамбль": "ensemble",
+    "Все": "all",
 }
+MODEL_DISPLAY = {value: key for key, value in MODELS.items()}
+KEYBOARD_LAYOUT = [
+    ["Classic ML", "Нейросеть", "Transformer"],
+    ["FastText", "Ансамбль", "Все"],
+]
 
 
 # --- команды ---
@@ -23,9 +31,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало работы с выбором модели."""
     try:
         # Простая клавиатура без сложных параметров
-        keyboard = [["Classic ML", "Нейросеть", "Transformer"]]
         reply_markup = ReplyKeyboardMarkup(
-            keyboard,
+            KEYBOARD_LAYOUT,
             resize_keyboard=True,
             one_time_keyboard=True
         )
@@ -35,7 +42,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎧 Привет! Выбери модель для классификации:\n\n"
             "• Classic ML - классическая ML модель\n"
             "• Нейросеть - нейросетевая модель\n"
-            "• Transformer - трансформерная модель\n\n"
+            "• Transformer - трансформерная модель\n"
+            "• FastText - fastText-бейзлайн\n"
+            "• Ансамбль - логрег + TextCNN\n"
+            "• Все - запустить всё сразу и получить сводку\n\n"
             "После выбора отправь аудиосообщение для анализа."
         )
 
@@ -69,7 +79,7 @@ async def handle_model_selection(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(
             "Пожалуйста, выберите модель из предложенных вариантов.",
             reply_markup=ReplyKeyboardMarkup(
-                [["Classic ML", "Нейросеть", "Transformer"]],
+                KEYBOARD_LAYOUT,
                 one_time_keyboard=True,
                 resize_keyboard=True
             )
@@ -83,7 +93,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Сначала выберите модель для классификации!",
             reply_markup=ReplyKeyboardMarkup(
-                [["Classic ML", "Нейросеть", "Transformer"]],
+                KEYBOARD_LAYOUT,
                 one_time_keyboard=True,
                 resize_keyboard=True
             )
@@ -132,13 +142,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response_data.get('success'):
             label = response_data.get('label')
             class_name = response_data.get('label_name', 'Неизвестно')
-            confidence = response_data.get('confidence', 0)
+            confidence = float(response_data.get('confidence', 0))
             text = response_data.get('text', '')
             duration = response_data.get('duration')
             word_count = response_data.get('word_count')
-            model_used = response_data.get('model')
-            # Получаем человеко-читаемое название модели
-            model_name = next((name for name, id in MODELS.items() if id == model_used), model_used)
+            model_used = response_data.get('model') or context.user_data['selected_model']
+            best_model = response_data.get('best_model')
+            model_name = MODEL_DISPLAY.get(model_used, model_used)
+
+            details = response_data.get('details') or []
+            summary_entries = response_data.get('summary') or []
 
             # Формируем детализированный ответ
             response_parts = [
@@ -148,11 +161,28 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🤖 *Модель:* {model_name}"
             ]
 
+            if model_used == "all" and best_model:
+                best_model_name = MODEL_DISPLAY.get(best_model, best_model)
+                response_parts.append(f"⭐ *Лучшая модель:* {best_model_name}")
+
             # Добавляем дополнительную информацию если есть
             if duration:
                 response_parts.append(f"⏱ *Длительность:* {duration:.1f}с")
             if word_count:
                 response_parts.append(f"📝 *Слов распознано:* {word_count}")
+
+            if details:
+                response_parts.append("📋 *Сводка по моделям:*")
+                for item in details:
+                    detail_model = item.get('model')
+                    detail_name = MODEL_DISPLAY.get(detail_model, detail_model)
+                    detail_label = item.get('label_name', 'Неизвестно')
+                    detail_conf = float(item.get('confidence', 0))
+                    response_parts.append(f"• {detail_name}: {detail_label} ({detail_conf:.2f})")
+            elif summary_entries:
+                response_parts.append("📋 *Сводка:*")
+                for entry in summary_entries:
+                    response_parts.append(f"• {entry}")
 
             response_parts.append(f"\n*Текст:*\n{text[:400]}{'...' if len(text) > 400 else ''}")
 
@@ -207,11 +237,8 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def change_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для смены модели"""
-    keyboard = [
-        ["Classic ML", "Нейросеть", "Transformer"]
-    ]
     reply_markup = ReplyKeyboardMarkup(
-        keyboard,
+        KEYBOARD_LAYOUT,
         one_time_keyboard=True,
         resize_keyboard=True,
         input_field_placeholder="Выберите модель..."
