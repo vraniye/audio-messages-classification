@@ -164,7 +164,7 @@ class TextClassifier:
     def _load_torch_bert(self, model_type, config):
         # Загружаем оригинальный RuBERT и токенизатор из Hugging Face
         tokenizer = AutoTokenizer.from_pretrained("DeepPavlov/rubert-base-cased")
-        bert_backbone = AutoModel.from_pretrained("DeepPavlov/rubert-base-cased")
+        bert_backbone = AutoModel.from_pretrained("DeepPavlov/rubert-base-cased", use_safetensors=True)
 
         model = BERTClassifier(bert_backbone, num_classes=config.get("num_classes", 2))
         model.load_state_dict(
